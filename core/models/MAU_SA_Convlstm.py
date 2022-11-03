@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 from core.layers.MAUCell import MAUCell
+from core.layers.SAConvLstmcell import SA_Convlstm_cell
+
 import math
 
 
@@ -17,7 +19,8 @@ class RNN(nn.Module):
         if not self.configs.model_mode in self.states:
             raise AssertionError
         cell_list = []
-
+        cell_list1 = []
+        bns = []
         width = configs.img_width // configs.patch_size // configs.sr_size
         height = configs.img_height // configs.patch_size // configs.sr_size
 
@@ -27,7 +30,14 @@ class RNN(nn.Module):
                 MAUCell(in_channel, num_hidden[i], height, width, configs.filter_size,
                         configs.stride, self.tau, self.cell_mode)
             )
+            cell_list1.append(
+                SA_Convlstm_cell(in_channel, num_hidden[i], configs)
+            )
+            bns.append(nn.LayerNorm([num_hidden[i], height, width]))
         self.cell_list = nn.ModuleList(cell_list)
+
+        self.cell_list1 = nn.ModuleList(cell_list1)
+        self.bns = nn.ModuleList(bns)
 
         # Encoder
         n = int(math.log2(configs.sr_size))
@@ -99,6 +109,8 @@ class RNN(nn.Module):
         height = frames.shape[3] // self.configs.sr_size
         width = frames.shape[4] // self.configs.sr_size
         frame_channels = frames.shape[2]
+        states = self.init_hidden(batch_size=batch_size, img_size=(height, width))
+
         next_frames = []
         T_t = []
         T_pre = []
@@ -124,9 +136,11 @@ class RNN(nn.Module):
                 time_diff = t - self.configs.input_length
                 net = mask_true[:, time_diff] * frames[:, t] + (1 - mask_true[:, time_diff]) * x_gen
             frames_feature = net
+
             frames_feature_encoded = []
             for i in range(len(self.encoders)):
                 frames_feature = self.encoders[i](frames_feature)
+                frames_feature1 = frames_feature.clone()
                 frames_feature_encoded.append(frames_feature)
             if t == 0:
                 for i in range(self.num_layers):
@@ -142,8 +156,19 @@ class RNN(nn.Module):
                 T_t[i], S_t = self.cell_list[i](T_t[i], S_t, t_att, s_att)
                 T_pre[i].append(T_t[i])
             out = S_t
+
+            for i in range(self.num_layers):
+                if i == 0:
+                    x_gen, states[i] = self.cell_list1[i](frames_feature1, states[i])
+                    x_gen = self.bns[i](x_gen)
+                else:
+                    x_gen, states[i] = self.cell_list1[i](x_gen, states[i])
+                    x_gen = self.bns[i](x_gen)
+            out1 = x_gen
             # out = self.merge(torch.cat([T_t[-1], S_t], dim=1))
+            out = self.merge(torch.cat([out, out1], dim=1))
             frames_feature_decoded = []
+            #这里直接相加好还是cat呢?
             for i in range(len(self.decoders)):
                 out = self.decoders[i](out)
                 if self.configs.model_mode == 'recall':
@@ -153,3 +178,10 @@ class RNN(nn.Module):
             next_frames.append(x_gen)
         next_frames = torch.stack(next_frames, dim=0).permute(1, 0, 2, 3, 4).contiguous()
         return next_frames
+
+
+    def init_hidden(self, batch_size, img_size):
+        states = []
+        for i in range(self.num_layers):  # 初始化四层,不改变图片的维度
+            states.append(self.cell_list1[i].init_hidden(batch_size, img_size))
+        return states

@@ -2,7 +2,7 @@ import os
 import torch
 import torch.nn as nn
 from torch.optim import Adam
-from core.models import SA_ConvLSTM
+from core.models import MAU_SA_Convlstm
 # from core.models import STAU
 # from core.models import AAU
 # from core.models import STAUv2
@@ -17,7 +17,7 @@ class Model(object):
         self.patch_channel = configs.img_channel * (configs.patch_size ** 2)
         self.num_layers = configs.num_layers
         networks_map = {
-            'ConvLSTM': SA_ConvLSTM.RNN,
+            'ConvLSTM': MAU_SA_Convlstm.RNN,
             # 'stau': STAU.RNN,
             # 'aau': AAU.RNN,
             # 'stauv2': STAUv2.RNN, 
